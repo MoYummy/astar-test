@@ -1,2 +1,2 @@
-# astar-test
-astar-test
+# rcBuildPolyMeshDetail
+[rcBuildPolyMeshDetail](https://github.com/recastnavigation/recastnavigation/blob/master/Recast/Source/RecastMeshDetail.cpp) 
