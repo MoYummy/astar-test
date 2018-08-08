@@ -19,6 +19,7 @@ namespace Pathfinding.Voxels
 		}
 
 		ushort RC_UNSET_HEIGHT = 0xffff;
+		int UNDEF = -1;
 
 		float vdot2(Vector3 p, Vector3 q) {
 			return p.x * q.x + p.z * q.z;
@@ -52,7 +53,6 @@ namespace Pathfinding.Voxels
 			var v2 = p3.z - p1.z;
 			return u1* v2 - v1* u2;
 		}
-
 
 		bool circumCircle(Vector4 p1, Vector4 p2, Vector4 p3, ref Vector3 c, ref float r)
 		{
@@ -168,6 +168,22 @@ namespace Pathfinding.Voxels
 			return dmin;
 		}
 
+		float distToPoly(int nvert, float[] verts, Vector3 p)
+		{
+			var dmin = Mathf.Infinity;
+			var i = 0;
+			var j = nvert - 1;
+			var c = false;
+			for (;i < nvert ;j = i++) {
+				var vi = new Vector3(verts[i * 3 + 0], verts[i * 3 + 1], verts[i * 3 + 2]);
+				var vj = new Vector3(verts[j * 3 + 0], verts[j * 3 + 1], verts[j * 3 + 2]);
+				if (((vi.z > p.z) != (vj.z > p.z)) && (p.x < (vj.x - vi.x) * (p.z - vi.z) / (vj.z - vi.z) + vi.x))
+					c = !c;
+				dmin = Mathf.Min(dmin, distancePtSeg2d(p, vj, vi));
+			}
+			return c ? -dmin : dmin;
+		}
+
 		int getHeight(float fx, float fy, float fz, float cs, float ics, float ch, VoxelHeightPatch hp)
 		{
 			var ix = (int)(fx * ics + 0.01f);
@@ -175,18 +191,25 @@ namespace Pathfinding.Voxels
 			ix = Mathf.Clamp(ix - hp.xmin, 0, hp.width - 1);
 			iz = Mathf.Clamp(iz - hp.zmin, 0, hp.depth - 1);
 			var h = hp.data[ix + iz * hp.width];
-			if (h == RC_UNSET_HEIGHT) {
+
+			var hpList = new List<int>() { ix + iz * hp.width };
+			for (int j = 0; h == RC_UNSET_HEIGHT; j++) {
+				var hx = hpList[j] % hp.width;
+				var hz = (hpList[j] - hx) / hp.width;
 				// Special case when data might be bad.
 				// Find nearest neighbour pixel which has valid height.
-				var off = new int[8 * 2] { -1, 0, -1, -1, 0, -1, 1, -1, 1, 0, 1, 1, 0, 1, -1, 1 };
+				var off = new int[] { -1, 0, -1, -1, 0, -1, 1, -1, 1, 0, 1, 1, 0, 1, -1, 1 };
 				var dmin = Mathf.Infinity;
 				for (int i = 0; i < 8; i++)
 				{
-					var nx = ix + off[i * 2 + 0];
-					var nz = iz + off[i * 2 + 1];
+					var nx = hx + off[i * 2 + 0];
+					var nz = hz + off[i * 2 + 1];
 					if (nx < 0 || nz < 0 || nx >= hp.width || nz >= hp.depth) continue;
 					var nh = hp.data[nx + nz * hp.width];
-					if (nh == RC_UNSET_HEIGHT) continue;
+					if (nh == RC_UNSET_HEIGHT) {
+						if (!hpList.Contains(nx + nz * hp.width)) hpList.Add(nx + nz * hp.width);
+						continue;
+					}
 					var d = Mathf.Abs(nh * hp.ch - fy);
 					if (d < dmin) {
 						h = nh;
@@ -207,10 +230,10 @@ namespace Pathfinding.Voxels
 			return -1;
 		}
 
-		void addEdge(List<int> edges, ref int nedges, int maxEdges, int s, int t, int l, int r)
+		int addEdge(List<int> edges, ref int nedges, int maxEdges, int s, int t, int l, int r)
 		{
 			if (nedges >= maxEdges) {
-				return;
+				return UNDEF;
 			}
 
 			// Add edge if not already in the triangulation.
@@ -221,15 +244,18 @@ namespace Pathfinding.Voxels
 				edges[nedges * 4 + 2] = l;
 				edges[nedges * 4 + 3] = r;
 				nedges++;
+				return nedges;
+			} else {
+				return UNDEF;
 			}
 		}
 
 
 		void updateLeftFace(ref List<int> edges, int e, int s, int t, int f)
 		{
-			if (edges[e + 0] == s && edges[e + 1] == t && edges[e + 2] == -1)
+			if (edges[e + 0] == s && edges[e + 1] == t && edges[e + 2] == UNDEF)
 				edges[e + 2] = f;
-			else if (edges[e + 1] == s && edges[e + 0] == t && edges[e + 3] == -1)
+			else if (edges[e + 1] == s && edges[e + 0] == t && edges[e + 3] == UNDEF)
 				edges[e + 3] = f;
 		}
 
@@ -247,7 +273,7 @@ namespace Pathfinding.Voxels
 			return 0;
 		}
 
-		bool overlapEdges(List<Vector4> pts, List<int> edges, int nedges, int s1, int t1)
+		bool overlapEdges(Vector4[] pts, List<int> edges, int nedges, int s1, int t1)
 		{
 			for (int i = 0; i < nedges; ++i) {
 				var s0 = edges[i * 4 + 0];
@@ -261,10 +287,8 @@ namespace Pathfinding.Voxels
 			return false;
 		}
 
-		void completeFacet(List<Vector4> pts, int npts, List<int> edges, ref int nedges, int maxEdges, ref int nfaces, int e)
+		void completeFacet(Vector4[] pts, int npts, List<int> edges, ref int nedges, int maxEdges, ref int nfaces, int e)
 		{
-			var UNDEF = -1;
-
 			var edgeId = e * 4;
 
 			// Cache s and t.
@@ -348,21 +372,19 @@ namespace Pathfinding.Voxels
 			}
 		}
 
-		void delaunayHull(int npts, List<Vector4> pts, int nhull, int[] hull, ref List<int> tris, ref List<int> edges)
+		void delaunayHull(int npts, Vector4[] pts, int nhull, int[] hull, ref List<int> tris, ref List<int> edges)
 		{
 			var nfaces = 0;
 			var nedges = 0;
 			var maxEdges = npts * 10;
 			var UNSET_TRI_VERT = -1;
-			var UNSET_EDGE = -1;
-			var UNDEF = -1;
 			var HULL = -2;
 			edges.Clear();
 			for (int i = 0; i < maxEdges * 4; i++)
-				edges.Add(UNSET_EDGE);
+				edges.Add(UNDEF);
 
 			for (int i = 0, j = nhull - 1; i < nhull; j = i++) {
-				addEdge(edges, ref nedges, maxEdges, hull[j], hull[i], HULL, UNSET_EDGE);
+				addEdge(edges, ref nedges, maxEdges, hull[j], hull[i], HULL, UNDEF);
 			}
 
 			var currentEdge = 0;
@@ -557,16 +579,15 @@ namespace Pathfinding.Voxels
 					// using lexological sort or else there will be seams.
 					if (Mathf.Abs(vj.x - vi.x) < Mathf.Epsilon) {
 						if (vj.z > vi.z) {
-							Memory.Swap(ref vj, ref vi);
+							MemorySwap(ref vj, ref vi);
 							swapped = true;
 						}
 					} else {
 						if (vj.x > vi.x) {
-							Memory.Swap(ref vj, ref vi);
+							MemorySwap(ref vj, ref vi);
 							swapped = true;
 						}
 					}
-
 					// Create samples along the edge.
 					var dx = vi.x - vj.x;
 					var dy = vi.y - vj.y;
@@ -589,34 +610,40 @@ namespace Pathfinding.Voxels
 					idx.Add(0);
 					idx.Add(nn);
 
-					for (int k = 0; k < idx.Count - 1;) {
+					for (int k = 0; k < idx.Count - 1;)
+					{
 						var a = idx[k];
 						var b = idx[k + 1];
 						var va = vedge[a];
 						var vb = vedge[b];
-
 						// Find maximum deviation along the segment.
 						var maxd = 0f;
 						var maxi = -1;
-						for (int m = a + 1; m < b; m++) {
-							var vm = vedge[m];
-							var dev = distancePtSeg(vm, va, vb);
-							if (dev > maxd) {
+						for (int m = a + 1; m < b; m++)
+						{
+							var dev = distancePtSeg(vedge[m], va, vb);
+							if (dev > maxd)
+							{
 								maxd = dev;
 								maxi = m;
 							}
 						}
 
-						if (maxi != -1 && maxd > sampleMaxError * sampleMaxError) {
+						// If the max deviation is larger than accepted error,
+						// add new point, else continue to next segment.
+						if (maxi != -1 && maxd > sampleMaxError * sampleMaxError)
+						{
 							idx.Insert(k + 1, maxi);
-						} else {
+						}
+						else
+						{
 							k++;
 						}
 					}
 
 					hull[nhull] = j;
 					nhull++;
-
+					// Add new vertices.
 					if (swapped) {
 						for (int k = idx.Count - 2; k > 0; k--) {
 							verts.Add(new Vector4(
@@ -645,11 +672,16 @@ namespace Pathfinding.Voxels
 				}
 			}
 
+			// If the polygon minimum extent is small (sliver or small triangle), do not try to add internal points.
 			if (minExtent < sampleDist * 2) {
 				triangulateHull(nverts, verts.ToArray(), nhull, hull, ref tris);
 				return;
 			}
 
+			// Tessellate the base mesh.
+			// We're using the triangulateHull instead of delaunayHull as it tends to
+			// create a bit better triangulation for long thing triangles when there
+			// are no internal points.
 			triangulateHull(nverts, verts.ToArray(), nhull, hull, ref tris);
 
 			if (tris.Count == 0) {
@@ -671,15 +703,16 @@ namespace Pathfinding.Voxels
 					bmax.z = Mathf.Max(bmax.z, _in[i * 3 + 2]);
 				}
 
-				var x0 = (int)Mathf.Floor(bmin.x / sampleDist);
-				var x1 = (int)Mathf.Floor(bmax.x / sampleDist);
-				var z0 = (int)Mathf.Floor(bmin.z / sampleDist);
-				var z1 = (int)Mathf.Floor(bmax.z / sampleDist);
+				var x0 = Mathf.FloorToInt(bmin.x / sampleDist);
+				var x1 = Mathf.FloorToInt(bmax.x / sampleDist);
+				var z0 = Mathf.FloorToInt(bmin.z / sampleDist);
+				var z1 = Mathf.FloorToInt(bmax.z / sampleDist);
 				samples.Clear();
 				for (int z = z0; z < z1; z++) {
 					for (int x = x0; x < x1; x++) {
 						var pt = new Vector3(x * sampleDist, (bmax.y + bmin.y) * 0.5f, z * sampleDist);
 						// Make sure the samples are not too close to the edges.
+						if (distToPoly(nin, _in, pt) > -sampleDist / 2) continue;
 						samples.Add(x);
 						samples.Add(getHeight(pt.x, pt.y, pt.z, cs, ics, ch, hp));
 						samples.Add(z);
@@ -731,19 +764,20 @@ namespace Pathfinding.Voxels
 					// TODO: Incremental add instead of full rebuild.
 					edges.Clear();
 					tris.Clear();
-					delaunayHull(nverts, verts, nhull, hull, ref tris, ref edges);
+					delaunayHull(nverts, verts.ToArray(), nhull, hull, ref tris, ref edges);
 					//triangulateHull(nverts, verts.ToArray(), nhull, hull, ref tris);
 				}
 			}
 
 			if (tris.Count > MAX_TRIS * 4) {
+				Debug.LogError("Shrinking triangle count");
 				tris.RemoveRange(MAX_TRIS * 4, tris.Count - MAX_TRIS * 4);
 			}
 		}
 
 		void getHeightDataSeedsFromVertices(
 			VoxelArea chf, int[] poly, Int3[] verts, int bs,
-			VoxelHeightPatch hp, List<int> stack, int regId, int areaId) {
+			ref VoxelHeightPatch hp, ref List<Vector3Int> stack, int regId, int areaId) {
 
 			stack.Clear();
 
@@ -780,9 +814,7 @@ namespace Pathfinding.Voxels
 					}
 				}
 				if (ci != -1) {
-					stack.Add(cx);
-					stack.Add(cz);
-					stack.Add(ci);
+					stack.Add(new Vector3Int(cx, cz, ci));
 				}
 			}
 
@@ -795,27 +827,23 @@ namespace Pathfinding.Voxels
 			pcx /= poly.Length;
 			pcz /= poly.Length;
 
-			for (int i = 0; i < stack.Count; i += 3) {
-				var cx = stack[i + 0];
-				var cz = stack[i + 1];
+			for (int i = 0; i < stack.Count; i++) {
+				var cx = stack[i].x;
+				var cz = stack[i].y;
 				var idx = cx - hp.xmin + (cz - hp.zmin) * hp.width;
 				hp.data[idx] = 1;
 			}
 
 			while (stack.Count > 0) {
-				var ci = stack[stack.Count - 1];
-				stack.RemoveAt(stack.Count - 1);
-				var cz = stack[stack.Count - 1];
-				stack.RemoveAt(stack.Count - 1);
-				var cx = stack[stack.Count - 1];
+				var ci = stack[stack.Count - 1].z;
+				var cz = stack[stack.Count - 1].y;
+				var cx = stack[stack.Count - 1].x;
 				stack.RemoveAt(stack.Count - 1);
 
 				// Check if close to center of the polygon.
 				if (Mathf.Abs(cx-pcx) <= 1 && Mathf.Abs(cz-pcz) <= 1) {
 					stack.Clear();
-					stack.Add(cx);
-					stack.Add(cz);
-					stack.Add(ci);
+					stack.Add(new Vector3Int(cx, cz, ci));
 					break;
 				}
 
@@ -839,32 +867,30 @@ namespace Pathfinding.Voxels
 					var idx = ax - hp.xmin + (az - hp.zmin) * hp.width;
 					hp.data[idx] = 1;
 
-					stack.Add(ax);
-					stack.Add(az);
-					stack.Add(ai);
+					stack.Add(new Vector3Int(ax, az, ai));
 				}
 			}
 
-			for (int i = 0; i < stack.Count; i += 3) {
-				var cx = stack[i + 0];
-				var cz = stack[i + 1];
-				var ci = stack[i + 2];
+			for (int i = 0; i < stack.Count; i++) {
+				var cx = stack[i].x;
+				var cz = stack[i].y;
+				var ci = stack[i].z;
 				var idx = cx - hp.xmin + (cz - hp.zmin) * hp.width;
 				var cs = chf.compactSpans[ci];
 				hp.data[idx] = cs.y;
 
-				stack[i + 0] += bs;
-				stack[i + 1] += bs;
+				stack[i] = new Vector3Int(stack[i].x + bs, stack[i].y + bs, stack[i].z);
 			}
 		}
 
-		void getHeightData(VoxelArea chf, int[] poly, Int3[] verts, int bs, VoxelHeightPatch hp, List<int> stack, int regId, int areaId)
+		void getHeightData(VoxelArea chf, int[] poly, Int3[] verts, int bs, ref VoxelHeightPatch hp, ref List<Vector3Int> stack, int regId, int areaId)
 		{
 			stack.Clear();
+			for (int i = 0; i < hp.width * hp.depth; i++) hp.data[i] = RC_UNSET_HEIGHT;
 
 			var empty = true;
-
-			var spanDecided = new bool[hp.width * hp.depth];
+			// Copy the height from the same region, and mark region borders
+			// as seed points to fill the rest.
 			for (int hz = 0; hz < hp.depth; hz++)
 			{
 				var z = hp.zmin + hz/* + bs*/;
@@ -872,47 +898,14 @@ namespace Pathfinding.Voxels
 				{
 					var x = hp.xmin + hx/* + bs*/;
 					var c = chf.compactCells[x + z * chf.width];
-
-					for (int i = (int)(c.index + c.count - 1), ni = (int)(c.index); i >= ni; i--)
+					for (int i = (int)c.index, ni = (int)(c.index + c.count); i < ni; i++)
 					{
 						var s = chf.compactSpans[i];
-						var reg = s.reg;
 
-						if (!spanDecided[hx + hz * hp.width]) hp.data[hx + hz * hp.width] = s.y;
-
-						if ((reg & BorderReg) == BorderReg)
-						{
-							continue;
-						}
-
-						if (reg == regId)
-						{
-							spanDecided[hx + hz * hp.width] = true;
-						}
-						else
-						{
-							for (int dir = 0; dir < 4; dir++)
-							{
-								var rs = new CompactVoxelSpan();
-								if (s.GetConnection(dir) != NotConnected)
-								{
-									var _nx = x + chf.DirectionX[dir];
-									var _nz = z + chf.DirectionZ[dir] / chf.width;
-									var _ni = (int)chf.compactCells[_nx + _nz * chf.width].index + s.GetConnection(dir);
-									rs = chf.compactSpans[_ni];
-								}
-								if (rs.reg == regId)
-								{
-									s = rs;
-									spanDecided[hx + hz * hp.width] = true;
-									break;
-								}
-							}
-						}
-
-						if (spanDecided[hx + hz * hp.width])
+						if (s.reg == regId)
 						{
 							//Debug.Assert(chf.areaTypes[i] == areaId);
+							// Store height
 							hp.data[hx + hz * hp.width] = s.y;
 							empty = false;
 
@@ -936,18 +929,15 @@ namespace Pathfinding.Voxels
 							}
 							if (border)
 							{
-								stack.Add(x);
-								stack.Add(z);
-								stack.Add(i);
+								stack.Add(new Vector3Int(x, z, i));
 							}
 						}
 					}
 				}
 			}
-
 			if (empty)
 			{
-				getHeightDataSeedsFromVertices(chf, poly, verts, bs, hp, stack, regId, areaId);
+				getHeightDataSeedsFromVertices(chf, poly, verts, bs, ref hp, ref stack, regId, areaId);
 			}
 
 			var RETRACT_SIZE = 256;
@@ -955,9 +945,9 @@ namespace Pathfinding.Voxels
 
 			while (head * 3 > stack.Count)
 			{
-				var cx = stack[head * 3 + 0];
-				var cz = stack[head * 3 + 1];
-				var ci = stack[head * 3 + 2];
+				var cx = stack[head].x;
+				var cz = stack[head].y;
+				var ci = stack[head].z;
 				head++;
 				if (head > RETRACT_SIZE)
 				{
@@ -984,11 +974,8 @@ namespace Pathfinding.Voxels
 					var _as = chf.compactSpans[ai];
 
 					hp.data[hx + hz * hp.width] = _as.y;
-					spanDecided[hx + hz * hp.width] = true;
 
-					stack.Add(ax);
-					stack.Add(az);
-					stack.Add(ai);
+					stack.Add(new Vector3Int(ax, az, ai));
 				}
 			}
 		}
@@ -1005,7 +992,7 @@ namespace Pathfinding.Voxels
 
 			var edges = ListPool<int>.Claim(64);
 			var tris = ListPool<int>.Claim(256);
-			var stack = ListPool<int>.Claim(512);
+			var stack = ListPool<Vector3Int>.Claim(512);
 			var samples = ListPool<int>.Claim(512);
 			var verts = ListPool<Vector4>.Claim(256); // a flag for original vertex
 			var hp = new VoxelHeightPatch();
@@ -1077,7 +1064,7 @@ namespace Pathfinding.Voxels
 				hp.zmin = bounds[i * 4 + 2];
 				hp.width = bounds[i * 4 + 1] - bounds[i * 4 + 0];
 				hp.depth = bounds[i * 4 + 3] - bounds[i * 4 + 2];
-				getHeightData(voxelArea, mesh.tris, mesh.verts, bs, hp, stack, mesh.regs[i], mesh.areas[i]);
+				getHeightData(voxelArea, mesh.tris, mesh.verts, bs, ref hp, ref stack, mesh.regs[i], mesh.areas[i]);
 				//verifyHeightData(mesh, i, hp);
 
 				var nverts = 0;
@@ -1109,7 +1096,7 @@ namespace Pathfinding.Voxels
 								distMin = distSq;
 							}
 						}
-						//vDistMin.y = dvy;
+						vDistMin.y = dvy;
 						dmeshVerts.Add(vDistMin);
 					}
 					else
@@ -1139,6 +1126,13 @@ namespace Pathfinding.Voxels
 			//PrintMesh(dmesh, "dmesh");
 		}
 
+		void MemorySwap<T>(ref T a, ref T b)
+		{
+			T tmp = a;
+
+			a = b;
+			b = tmp;
+		}
 
 		void verifyHeightData(VoxelMesh mesh, int i, VoxelHeightPatch hp)
 		{
@@ -1147,15 +1141,24 @@ namespace Pathfinding.Voxels
 				mesh.verts[mesh.tris[i * 3 + 1]],
 				mesh.verts[mesh.tris[i * 3 + 2]]
 			};
+			var error = "";
 			foreach (var v in verts)
 			{
 				var hx = v.x - hp.xmin;
 				var hz = v.z - hp.zmin;
 				var hy = hp.data[hx + hz * hp.width];
-				if (Mathf.Abs(v.y - hy) > hy * 0.05f)
+				if (Mathf.Abs(v.y - hy) > hy * 0.05f && Mathf.Abs(v.y - hy) > 2)
 				{
-					Debug.LogError(v + "=>(" + hx + "," + hz + "),hy:" + hy);
+					error += v + "=>(" + hx + "," + hz + "),hy:" + hy + "\n";
 				}
+			}
+			if (!string.IsNullOrEmpty(error)) {
+				var hpData = "";
+				for (int hx = 0; hx < hp.width; hx++)
+					for (int hz = 0; hz < hp.depth; hz++)
+						hpData += hx + "," + hz + ":" + hp.data[hx + hz * hp.width] + "\n";
+				error = hp.width + "," + hp.depth + "\n" + error + hpData;
+				Debug.LogError(error);
 			}
 		}
 
@@ -1170,10 +1173,12 @@ namespace Pathfinding.Voxels
 			var removeVertMap = new Dictionary<int, int>();
 			for (int i = 0; i < verts.Count; i++)
 			{
-				var j = vertMap[verts[i]];
-				if (j != i)
-				{
-					removeVertMap[i] = j;
+				if (vertMap.ContainsKey(verts[i])) {
+					var j = vertMap[verts[i]];
+					if (j != i)
+					{
+						removeVertMap[i] = j;
+					}
 				}
 			}
 
