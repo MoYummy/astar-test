@@ -5,8 +5,8 @@
 			VoxelMesh mesh;
 			if (buildPolyMeshDetail)
 			{
-				var sampleDist = cellSize * 6.0f;
-				var sampleMaxError = CellHeight * 1.0f;;
+				var sampleDist = 6; // cellSize * 6.0f
+				var sampleMaxError = 1; // CellHeight * 1.0f
 				vox.BuildPolyMeshDetail(sampleDist, sampleMaxError, pmesh, out mesh);
 			}
 			else
