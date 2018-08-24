@@ -16,10 +16,25 @@ namespace Pathfinding.Voxels
 			public int querymax;
 		}
 
+		enum HULL {
+			VALID = 0,
+			UNCOVERED = 1,
+			OVERLAPPED = 2,
+			MISSING_TRIANGLE = 3,
+			DUPLICATE_TRIANGLE = 4,
+			MISSING_EDGE = 5,
+			DUPLICATE_EDGE = 6
+		}
+
+		enum SAMPLE {
+			NOT_ADDED = 0,
+			ADDED = 1
+		}
+
 		ushort RC_UNSET_HEIGHT = 0xffff;
 		int UNDEF = -1;
 
-		float vdot2(Vector3 p, Vector3 q) {
+		int vdot2(Vector3Int p, Vector3Int q) {
 			return p.x * q.x + p.z * q.z;
 		}
 
@@ -35,15 +50,15 @@ namespace Pathfinding.Voxels
 			return Mathf.Sqrt(vdistSq2(p, q));
 		}
 
-		float vdist3(Vector3 p, Vector3 q)
+		int vdist3Sqr(Int3 p, Int3 q)
 		{
 			var dx = p.x - q.x;
 			var dy = p.y - q.y;
 			var dz = p.z - q.z;
-			return Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+			return dx * dx + dy * dy + dz * dz;
 		}
 
-		float vcross2(Vector3 p1, Vector3 p2, Vector3 p3)
+		int vcross2(Vector3Int p1, Vector3Int p2, Vector3Int p3)
 		{
 			var u1 = p2.x - p1.x;
 			var v1 = p2.z - p1.z;
@@ -52,39 +67,40 @@ namespace Pathfinding.Voxels
 			return u1* v2 - v1* u2;
 		}
 
-		bool circumCircle(Vector3Int p1, Vector3Int p2, Vector3Int p3, ref Vector3Int c, ref float r)
+		bool circumCircle(Vector3Int p1, Vector3Int p2, Vector3Int p3, ref Vector3 c, ref float r)
 		{
-			var v1 = new Vector3(0f, 0f, 0f);
-			var v2 = new Vector3(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
-			var v3 = new Vector3(p3.x - p1.x, p3.y - p1.y, p3.z - p1.z);
+			var v1 = new Vector3Int(0, 0, 0);
+			var v2 = new Vector3Int(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
+			var v3 = new Vector3Int(p3.x - p1.x, p3.y - p1.y, p3.z - p1.z);
 
 			var cp = vcross2(v1, v2, v3);
-			if (Mathf.Abs(cp) > Mathf.Epsilon) {
+			if (Mathf.Abs(cp) > 0)
+			{
 				var v1Sq = vdot2(v1, v1);
 				var v2Sq = vdot2(v2, v2);
 				var v3Sq = vdot2(v3, v3);
 				var _c = new Vector3(
-					(v1Sq * (v2.z - v3.z) + v2Sq * (v3.z - v1.z) + v3Sq * (v1.z - v2.z)) / (2 * cp),
+					(v1Sq * (v2.z - v3.z) + v2Sq * (v3.z - v1.z) + v3Sq * (v1.z - v2.z)) / (2f * cp),
 					 0f,
-					(v1Sq * (v3.x - v2.x) + v2Sq * (v1.x - v3.x) + v3Sq * (v2.x - v1.x)) / (2 * cp)
+					(v1Sq * (v3.x - v2.x) + v2Sq * (v1.x - v3.x) + v3Sq * (v2.x - v1.x)) / (2f * cp)
 				);
 				r = vdist2(_c, v1);
-				c = new Vector3Int(
-					Mathf.FloorToInt(_c.x) + p1.x,
-					Mathf.FloorToInt(_c.y) + p1.y,
-					Mathf.FloorToInt(_c.z) + p1.z
+				c = new Vector3(
+					_c.x + p1.x,
+					_c.y + p1.y,
+					_c.z + p1.z
 				);
 				return true;
 			}
-			c = new Vector3Int(p1.x, p1.y, p1.z);
+			c = new Vector3(p1.x, p1.y, p1.z);
 			r = 0f;
 			return false;
 		}
 
-		float distPtTri(Vector3 p, Vector3 a, Vector3 b, Vector3 c) {
-			var v0 = new Vector3(c.x - a.x, c.y - a.y, c.z - a.z);
-			var v1 = new Vector3(b.x - a.x, b.y - a.y, b.z - a.z);
-			var v2 = new Vector3(p.x - a.x, p.y - a.y, p.z - a.z);
+		float distPtTri(Vector3Int p, Vector3Int a, Vector3Int b, Vector3Int c) {
+			var v0 = new Vector3Int(c.x - a.x, c.y - a.y, c.z - a.z);
+			var v1 = new Vector3Int(b.x - a.x, b.y - a.y, b.z - a.z);
+			var v2 = new Vector3Int(p.x - a.x, p.y - a.y, p.z - a.z);
 
 			var dot00 = vdot2(v0, v0);
 			var dot01 = vdot2(v0, v1);
@@ -149,7 +165,7 @@ namespace Pathfinding.Voxels
 			return dx * dx + dz * dz;
 		}
 
-		float distToTriMesh(Vector3 p, List<Vector3Int> verts, int nvert, List<int> tris) {
+		float distToTriMesh(Vector3Int p, List<Vector3Int> verts, int nvert, List<int> tris) {
 			var dmin = Mathf.Infinity;
 			var dminSet = false;
 			for (int i = 0; i < tris.Count / 4; i++) {
@@ -162,7 +178,7 @@ namespace Pathfinding.Voxels
 					dminSet = true;
 				}
 			}
-			if (!dminSet) return -1;
+			if (!dminSet) return UNDEF;
 			return dmin;
 		}
 
@@ -172,7 +188,7 @@ namespace Pathfinding.Voxels
 			var i = 0;
 			var j = nvert - 1;
 			var c = false;
-			for (;i < nvert ;j = i++) {
+			for (; i < nvert; j = i++) {
 				var vi = verts[i];
 				var vj = verts[j];
 				if (((vi.z > p.z) != (vj.z > p.z)) && (p.x < (vj.x - vi.x) * (p.z - vi.z) / (vj.z - vi.z) + vi.x))
@@ -192,12 +208,12 @@ namespace Pathfinding.Voxels
 			if (h != RC_UNSET_HEIGHT) return h;
 
 			var hpList = new List<int>() { ix + iz * hp.width };
+			var off = new int[] { -1, 0, -1, -1, 0, -1, 1, -1, 1, 0, 1, 1, 0, 1, -1, 1 };
 			for (int j = 0; j < hp.querymax; j++) {
 				var hx = hpList[j] % hp.width;
 				var hz = (hpList[j] - hx) / hp.width;
 				// Special case when data might be bad.
 				// Find nearest neighbour pixel which has valid height.
-				var off = new int[] { -1, 0, -1, -1, 0, -1, 1, -1, 1, 0, 1, 1, 0, 1, -1, 1 };
 				var dmin = Mathf.Infinity;
 				for (int i = 0; i < 8; i++)
 				{
@@ -226,13 +242,15 @@ namespace Pathfinding.Voxels
 		{
 			for (int i = 0; i < nedges; i++)
 			{
-				if ((edges[i * 4 + 0] == s && edges[i * 4 + 1] == t) || (edges[i * 4 + 0] == t && edges[i * 4 + 1] == s))
+				if (edges[i * 4 + 0] == s && edges[i * 4 + 1] == t)
+					return i;
+				if (edges[i * 4 + 0] == t && edges[i * 4 + 1] == s)
 					return i;
 			}
-			return -1;
+			return UNDEF;
 		}
 
-		int addEdge(List<int> edges, ref int nedges, int maxEdges, int s, int t, int l, int r)
+		int addEdge(ref List<int> edges, ref int nedges, int maxEdges, int s, int t, int l, int r)
 		{
 			if (nedges >= maxEdges) {
 				return UNDEF;
@@ -240,7 +258,7 @@ namespace Pathfinding.Voxels
 
 			// Add edge if not already in the triangulation.
 			int e = findEdge(edges, nedges, s, t);
-			if (e == -1) {
+			if (e == UNDEF) {
 				edges[nedges * 4 + 0] = s;
 				edges[nedges * 4 + 1] = t;
 				edges[nedges * 4 + 2] = l;
@@ -261,15 +279,15 @@ namespace Pathfinding.Voxels
 				edges[e + 3] = f;
 		}
 
-		bool overlapSegSeg2d(Vector3 a, Vector3 b, Vector3 c, Vector3 d)
+		bool overlapSegSeg2d(Vector3Int a, Vector3Int b, Vector3Int c, Vector3Int d)
 		{
 			var a1 = vcross2(a, b, d);
 			var a2 = vcross2(a, b, c);
-			if (a1* a2 < 0.0f)
+			if (a1* a2 < 0)
 			{
 				var a3 = vcross2(c, d, a);
 				var a4 = a3 + a2 - a1;
-				if (a3* a4 < 0.0f)
+				if (a3* a4 < 0)
 					return true;
 			}
 			return false;
@@ -289,13 +307,13 @@ namespace Pathfinding.Voxels
 			return false;
 		}
 
-		void completeFacet(Vector3Int[] pts, int npts, List<int> edges, ref int nedges, int maxEdges, ref int nfaces, int e)
+		void completeFacet(Vector3Int[] pts, int npts, ref List<int> edges, ref int nedges, int maxEdges, ref int nfaces, int e)
 		{
 			var edgeId = e * 4;
 
 			// Cache s and t.
-			var s = -1;
-			var t = -1;
+			var s = UNDEF;
+			var t = UNDEF;
 			if (edges[edgeId + 2] == UNDEF) {
 				s = edges[edgeId + 0];
 				t = edges[edgeId + 1];
@@ -309,12 +327,12 @@ namespace Pathfinding.Voxels
 
 			// Find best point on left of edge.
 			int pt = npts;
-			var c = new Vector3Int(0, 0, 0);
+			var c = new Vector3(0f, 0f, 0f);
 			var r = -1f;
 			for (int u = 0; u < npts; u++)
 			{
 				if (u == s || u == t) continue;
-				if (vcross2(pts[s], pts[t], pts[u]) > Mathf.Epsilon)
+				if (vcross2(pts[s], pts[t], pts[u]) > 0)
 				{
 					if (r < 0)
 					{
@@ -341,7 +359,7 @@ namespace Pathfinding.Voxels
 						// s-u and t-u cannot overlap with s-pt nor t-pt if they exists.
 						if (overlapEdges(pts, edges, nedges, s, u))
 							continue;
-						if (overlapEdges(pts, edges, nedges, s, u))
+						if (overlapEdges(pts, edges, nedges, t, u))
 							continue;
 						// Edge is valid.
 						pt = u;
@@ -358,19 +376,19 @@ namespace Pathfinding.Voxels
 				// Add new edge or update face info of old edge.
 				e = findEdge(edges, nedges, pt, s);
 				if (e == UNDEF)
-					addEdge(edges, ref nedges, maxEdges, pt, s, nfaces, UNDEF);
+					addEdge(ref edges, ref nedges, maxEdges, pt, s, nfaces, UNDEF);
 				else
-					updateLeftFace(ref edges, e * 4, t, pt, nfaces);
+					updateLeftFace(ref edges, e * 4, pt, s, nfaces);
 
 				// Add new edge or update face info of old edge.
 				e = findEdge(edges, nedges, t, pt);
 				if (e == UNDEF)
-					addEdge(edges, ref nedges, maxEdges, t, pt, nfaces, UNDEF);
+					addEdge(ref edges, ref nedges, maxEdges, t, pt, nfaces, UNDEF);
 				else
 					updateLeftFace(ref edges, e * 4, t, pt, nfaces);
 				nfaces++;
 			} else {
-				updateLeftFace(ref edges, e * 4, t, pt, nfaces);
+				updateLeftFace(ref edges, e * 4, s, t, -2);
 			}
 		}
 
@@ -378,70 +396,73 @@ namespace Pathfinding.Voxels
 		{
 			var nfaces = 0;
 			var nedges = 0;
-			var maxEdges = npts * 10;
-			var UNSET_TRI_VERT = -1;
+			//var maxEdges = npts * 10;
+			var maxEdges = npts * 3 - nhull - 3;
+			var maxTris = npts * 2 - nhull - 2;
 			var HULL = -2;
 			edges.Clear();
 			for (int i = 0; i < maxEdges * 4; i++)
 				edges.Add(UNDEF);
 
 			for (int i = 0, j = nhull - 1; i < nhull; j = i++) {
-				addEdge(edges, ref nedges, maxEdges, hull[j], hull[i], HULL, UNDEF);
+				addEdge(ref edges, ref nedges, maxEdges, hull[j], hull[i], HULL, UNDEF);
 			}
 
 			var currentEdge = 0;
 			while (currentEdge < nedges) {
 				if (edges[currentEdge * 4 + 2] == UNDEF)
-					completeFacet(pts, npts, edges, ref nedges, maxEdges, ref nfaces, currentEdge);
+					completeFacet(pts, npts, ref edges, ref nedges, maxEdges, ref nfaces, currentEdge);
 				if (edges[currentEdge * 4 + 3] == UNDEF)
-					completeFacet(pts, npts, edges, ref nedges, maxEdges, ref nfaces, currentEdge);
+					completeFacet(pts, npts, ref edges, ref nedges, maxEdges, ref nfaces, currentEdge);
 				currentEdge++;
 			}
+
+			Debug.Assert(nedges == maxEdges);
+			Debug.Assert(nfaces == maxTris);
 
 			// Create tris
 			tris.Clear();
 			for (int i = 0; i < nfaces * 4; i++)
-				tris.Add(UNSET_TRI_VERT);
-			
+				tris.Add(UNDEF);
+
+			edges.RemoveRange(nedges * 4, edges.Count - nedges * 4);
 			for (int i = 0; i < nedges; i++) {
-				var e = new Vector3Int(
-					edges[i * 4 + 0],
-					edges[i * 4 + 1],
-					edges[i * 4 + 2]
-				);
-				var e_w = edges[i * 4 + 3];
-				if (e_w >= 0) {
+				var e_0 = edges[i * 4 + 0];
+				var e_1 = edges[i * 4 + 1];
+				var e_2 = edges[i * 4 + 2];
+				var e_3 = edges[i * 4 + 3];
+				if (e_3 >= 0) {
 					// Left face
-					if (tris[e_w * 4 + 0] == UNSET_TRI_VERT) {
-						tris[e_w * 4 + 0] = e.x;
-						tris[e_w * 4 + 1] = e.y;
-					} else if (tris[e_w * 4 + 0] == e.y) {
-						tris[e_w * 4 + 2] = e.x;
-					} else if (tris[e_w * 4 + 1] == e.x) {
-						tris[e_w * 4 + 2] = e.y;
+					if (tris[e_3 * 4 + 0] == UNDEF) {
+						tris[e_3 * 4 + 0] = e_0;
+						tris[e_3 * 4 + 1] = e_1;
+					} else if (tris[e_3 * 4 + 0] == e_1) {
+						tris[e_3 * 4 + 2] = e_0;
+					} else if (tris[e_3 * 4 + 1] == e_0) {
+						tris[e_3 * 4 + 2] = e_1;
 					}
 				}
-				if (e.z >= 0) {
+				if (e_2 >= 0) {
 					// Right
-					if (tris[e.z * 4 + 0] == UNSET_TRI_VERT)
+					if (tris[e_2 * 4 + 0] == UNDEF)
 					{
-						tris[e.z * 4 + 0] = e.y;
-						tris[e.z * 4 + 1] = e.x;
+						tris[e_2 * 4 + 0] = e_1;
+						tris[e_2 * 4 + 1] = e_0;
 					}
-					else if (tris[e.z * 4 + 0] == e.x)
+					else if (tris[e_2 * 4 + 0] == e_0)
 					{
-						tris[e.z * 4 + 2] = e.y;
+						tris[e_2 * 4 + 2] = e_1;
 					}
-					else if (tris[e.z * 4 + 1] == e.y)
+					else if (tris[e_2 * 4 + 1] == e_1)
 					{
-						tris[e.z * 4 + 2] = e.x;
+						tris[e_2 * 4 + 2] = e_0;
 					}
 				}
 			}
 
-			for (int i = tris.Count - 4; i > 0 ; i -= 4) {
-				if (tris[i + 0] == UNSET_TRI_VERT || tris[i + 1] == UNSET_TRI_VERT || tris[i + 2] == UNSET_TRI_VERT) {
-					//Debug.LogWarning("delaunayHull: Removing dangling face");
+			for (int i = tris.Count - 4; i >= 0 ; i -= 4) {
+				if (tris[i + 0] == UNDEF || tris[i + 1] == UNDEF || tris[i + 2] == UNDEF) {
+					Debug.LogWarning("delaunayHull: Removing dangling face");
 					tris.RemoveRange(i, 4);
 				}
 			}
@@ -457,7 +478,8 @@ namespace Pathfinding.Voxels
 			return Mathf.Sqrt(Mathf.Min(Mathf.Infinity, maxEdgeDist));
 		}
 
-		void triangulateHull(int nverts, Vector3Int[] verts, int nhull, int[] hull, ref List<int> tris)
+		int prev(int i, int n) { return i - 1 >= 0 ? i - 1 : n - 1; }
+		void triangulateHull(int nverts, Vector3Int[] verts, int nhull, int[] hull, int nin, ref List<int> tris)
 		{
 			var start = 0;
 			var left = 1;
@@ -465,14 +487,17 @@ namespace Pathfinding.Voxels
 
 			// Start from an ear with shortest perimeter.
 			// This tends to favor well formed triangles as starting point.
-			var dmin = Mathf.Infinity;
-			for (int i = 0, pi = nhull - 1; i < nhull; pi = i++)
+			var dmin = int.MaxValue;
+			for (int i = 0; i < nhull; i++)
 			{
+				if (hull[i] >= 3) continue; // only use vertice from original triangles as center
+
+				var pi = prev(i, nhull);
 				var ni = (i + 1) % nhull;
 				var pv = verts[hull[pi]];
 				var cv = verts[hull[i]];
 				var nv = verts[hull[ni]];
-				var d = vdist2(pv, cv) + vdist2(cv, nv) + vdist2(nv, pv);
+				var d = Mathf.FloorToInt(Int3.FloatPrecision * (vdist2(pv, cv) + vdist2(cv, nv) + vdist2(nv, pv)));
 				if (d < dmin)
 				{
 					start = i;
@@ -492,17 +517,17 @@ namespace Pathfinding.Voxels
 			// depending on which triangle has shorter perimeter.
 			// This heuristic was chose emprically, since it seems
 			// handle tesselated straight edges well.
-			while (((left + 1) % nhull) != right)
-			{
+			while ((left + 1) % nhull != right) {
+				// Check to see if se should advance left or right.
 				var nleft = (left + 1) % nhull;
-				var nright = (right - 1 + nhull) % nhull;
+				var nright = prev(right, nhull);
 
 				var cvleft = verts[hull[left]];
 				var nvleft = verts[hull[nleft]];
 				var cvright = verts[hull[right]];
 				var nvright = verts[hull[nright]];
-				var dleft = vdist2(cvleft, nvleft) + vdist2(nvleft, cvright);
-				var dright = vdist2(cvright, nvright) + vdist2(cvleft, nvright);
+				var dleft = Mathf.FloorToInt(Int3.FloatPrecision * (vdist2(cvleft, nvleft) + vdist2(nvleft, cvright)));
+				var dright = Mathf.FloorToInt(Int3.FloatPrecision * (vdist2(cvright, nvright) + vdist2(cvleft, nvright)));
 
 				if (dleft < dright)
 				{
@@ -537,26 +562,36 @@ namespace Pathfinding.Voxels
 
 		void buildPolyDetail(
 			Vector3Int[] _in, int nin,
-			int sampleDist, int sampleMaxError, VoxelArea chf, VoxelHeightPatch hp,
-			ref List<Vector3Int> verts, ref int nverts,
+			int sampleDist, int sampleMaxError, VoxelHeightPatch hp,
+			ref List<Vector3Int> verts, ref List<Vector3Int> vertsi, ref List<Vector3Int> vertso, ref int nverts,
 			ref List<int> tris, ref List<int> edges, ref List<int> samples) {
 
 			var MAX_VERTS = 127;
 			var MAX_TRIS = 255; // Max tris for delaunay is 2n-2-k (n=num verts, k=num hull verts).
 			var MAX_VERTS_PER_EDGE = 32;
-			var vedge = ArrayPool<Vector3Int>.Claim(MAX_VERTS_PER_EDGE + 1);
+			var vedge = ArrayPool<Vector3Int>.Claim(MAX_VERTS_PER_EDGE + 1); // use round to avoid duplicates
+			var vedgei = ArrayPool<Vector3Int>.Claim(MAX_VERTS_PER_EDGE + 1); // make sure vertices inside polygon
+			var vedgeo = ArrayPool<Vector3Int>.Claim(MAX_VERTS_PER_EDGE + 1); // make sure vertices outside polygon
 			var hull = ArrayPool<int>.Claim(MAX_VERTS);
 			var nhull = 0;
 
 			nverts = 0;
 
 			verts.Clear();
-			tris.Clear();
+			vertsi.Clear();
+			vertso.Clear();
 
+			var centroid = new Vector3Int(0, 0, 0);
 			for (int i = 0; i < nin; i++) {
 				verts.Add(_in[i]);
+				vertsi.Add(_in[i]);
+				vertso.Add(_in[i]);
+				centroid += _in[i];
 			}
 			nverts = nin;
+			centroid.x /= nin;
+			centroid.y /= nin;
+			centroid.z /= nin;
 
 			edges.Clear();
 			tris.Clear();
@@ -575,7 +610,7 @@ namespace Pathfinding.Voxels
 
 					// Make sure the segments are always handled in same order
 					// using lexological sort or else there will be seams.
-					if (Mathf.Abs(vj.x - vi.x) < Mathf.Epsilon) {
+					if (vj.x == vi.x) {
 						if (vj.z > vi.z) {
 							MemorySwap(ref vj, ref vi);
 							swapped = true;
@@ -586,40 +621,69 @@ namespace Pathfinding.Voxels
 							swapped = true;
 						}
 					}
+					var vgDir = vcross2(centroid, vj, vi) > 0;
+
 					// Create samples along the edge.
 					var dx = vi.x - vj.x;
 					var dy = vi.y - vj.y;
 					var dz = vi.z - vj.z;
-					var d = Mathf.Sqrt(dx * dx + dz * dz);
-					var nn = 1 + Mathf.FloorToInt(d / sampleDist);
+					//var d = Mathf.Sqrt(dx * dx + dz * dz);
+					//var nn = 1 + Mathf.FloorToInt(d / sampleDist);
+					var nn = 1 + Mathf.Max(dx, dy, dz) / sampleDist;
 					if (nn >= MAX_VERTS_PER_EDGE) nn = MAX_VERTS_PER_EDGE - 1;
 					if (nverts + nn >= MAX_VERTS)
 						nn = MAX_VERTS - 1 - nverts;
 
 					for (int k = 0; k <= nn; k++) {
 						var u = (k * 1f) / (nn * 1f);
-						vedge[k] = new Vector3Int(Mathf.FloorToInt(vj.x + dx * u), Mathf.FloorToInt(vj.y + dy * u), Mathf.FloorToInt(vj.z + dz * u));
-						var edgeY = getHeight(
-							vedge[k].x, vedge[k].y, vedge[k].z, hp);
-						vedge[k] = new Vector3Int(vedge[k].x, edgeY, vedge[k].z);
+						var edgeX = vj.x + Mathf.RoundToInt(dx * u);
+						var edgeY = vj.y + Mathf.RoundToInt(dy * u);
+						var edgeZ = vj.z + Mathf.RoundToInt(dz * u);
+						vedge[k] = new Vector3Int(edgeX, edgeY, edgeZ);
+
+						edgeX = Mathf.FloorToInt(vj.x + dx * u);
+						edgeY = Mathf.FloorToInt(vj.y + dy * u);
+						edgeZ = Mathf.FloorToInt(vj.z + dz * u);
+						vedgei[k] = new Vector3Int(edgeX, edgeY, edgeZ);
+						vedgeo[k] = new Vector3Int(edgeX, edgeY, edgeZ);
+
+						if (vgDir != (vcross2(vedgei[k], vj, vi) > 0))
+							vedgei[k].x = vj.x + Mathf.CeilToInt(dx * u);
+						if (vgDir != (vcross2(vedgei[k], vj, vi) > 0))
+							vedgei[k].z = vj.z + Mathf.CeilToInt(dz * u);
+						if (vgDir != (vcross2(vedgei[k], vj, vi) > 0))
+							vedgei[k].x = vj.x + Mathf.FloorToInt(dx * u);
+
+						if (vgDir == (vcross2(vedgeo[k], vj, vi) > 0))
+							vedgeo[k].x = vj.x + Mathf.CeilToInt(dx * u);
+						if (vgDir == (vcross2(vedgeo[k], vj, vi) > 0))
+							vedgeo[k].z = vj.z + Mathf.CeilToInt(dz * u);
+						if (vgDir == (vcross2(vedgeo[k], vj, vi) > 0))
+							vedgeo[k].x = vj.x + Mathf.FloorToInt(dx * u);
+						
+						
+						vedgei[k].y = getHeight(vedgei[k].x, vedgei[k].y, vedgei[k].z, hp);
+						vedge[k].y = vedgei[k].y;
+						vedgeo[k].y = vedgei[k].y;
 					}
 
 					var idx = new List<int>();
 					idx.Add(0);
 					idx.Add(nn);
+					var nidx = 2;
 
-					for (int k = 0; k < idx.Count - 1;)
+					for (int k = 0; k < nidx - 1;)
 					{
 						var a = idx[k];
 						var b = idx[k + 1];
 						var va = vedge[a];
 						var vb = vedge[b];
 						// Find maximum deviation along the segment.
-						var maxd = 0f;
-						var maxi = -1;
+						var maxd = 0;
+						var maxi = UNDEF;
 						for (int m = a + 1; m < b; m++)
 						{
-							var dev = distancePtSeg(vedge[m], va, vb);
+							var dev = Mathf.FloorToInt(Int3.FloatPrecision * distancePtSeg(vedge[m], va, vb));
 							if (dev > maxd)
 							{
 								maxd = dev;
@@ -629,9 +693,10 @@ namespace Pathfinding.Voxels
 
 						// If the max deviation is larger than accepted error,
 						// add new point, else continue to next segment.
-						if (maxi != -1 && maxd > sampleMaxError * sampleMaxError)
+						if (maxi != UNDEF && maxd > sampleMaxError * sampleMaxError * Int3.Precision)
 						{
 							idx.Insert(k + 1, maxi);
+							nidx++;
 						}
 						else
 						{
@@ -643,34 +708,56 @@ namespace Pathfinding.Voxels
 					nhull++;
 					// Add new vertices.
 					if (swapped) {
-						for (int k = idx.Count - 2; k > 0; k--) {
+						for (int k = nidx - 2; k > 0; k--) {
 							verts.Add(new Vector3Int(
 								vedge[idx[k]].x,
 								vedge[idx[k]].y,
 								vedge[idx[k]].z
+							));
+							vertsi.Add(new Vector3Int(
+								vedgei[idx[k]].x,
+								vedgei[idx[k]].y,
+								vedgei[idx[k]].z
+							));
+							vertso.Add(new Vector3Int(
+								vedgeo[idx[k]].x,
+								vedgeo[idx[k]].y,
+								vedgeo[idx[k]].z
 							));
 							hull[nhull] = nverts;
 							nhull++;
 							nverts++;
 						}
 					} else {
-						for (int k = 1; k < idx.Count - 1; k++) {
+						for (int k = 1; k < nidx - 1; k++) {
 							verts.Add(new Vector3Int(
 								vedge[idx[k]].x,
 								vedge[idx[k]].y,
 								vedge[idx[k]].z
+							));
+							vertsi.Add(new Vector3Int(
+								vedgei[idx[k]].x,
+								vedgei[idx[k]].y,
+								vedgei[idx[k]].z
+							));
+							vertso.Add(new Vector3Int(
+								vedgeo[idx[k]].x,
+								vedgeo[idx[k]].y,
+								vedgeo[idx[k]].z
 							));
 							hull[nhull] = nverts;
 							nhull++;
 							nverts++;
 						}
 					}
+					ListPool<int>.Release(idx);
 				}
 			}
 
 			// If the polygon minimum extent is small (sliver or small triangle), do not try to add internal points.
 			if (minExtent < sampleDist * 2) {
-				triangulateHull(nverts, verts.ToArray(), nhull, hull, ref tris);
+				triangulateHull(nverts, vertso.ToArray(), nhull, hull, nin, ref tris);
+				//verifyHull(nverts, vertso.ToArray(), nhull, hull, tris.ToArray(), _in);
 				return;
 			}
 
@@ -678,7 +765,8 @@ namespace Pathfinding.Voxels
 			// We're using the triangulateHull instead of delaunayHull as it tends to
 			// create a bit better triangulation for long thing triangles when there
 			// are no internal points.
-			triangulateHull(nverts, verts.ToArray(), nhull, hull, ref tris);
+			triangulateHull(nverts, vertso.ToArray(), nhull, hull, nin, ref tris);
+			//verifyHull(nverts, vertso.ToArray(), nhull, hull, tris.ToArray(), _in);
 
 			if (tris.Count == 0) {
 				// Could not triangulate the poly, make sure there is some valid data there.
@@ -688,8 +776,8 @@ namespace Pathfinding.Voxels
 
 			if (sampleDist > 0) {
 				// Create sample locations in a grid.
-				var bmin = new Vector3(Mathf.Infinity, Mathf.Infinity, Mathf.Infinity);
-				var bmax = new Vector3(-Mathf.Infinity, -Mathf.Infinity, -Mathf.Infinity);
+				var bmin = new Vector3Int(int.MaxValue, int.MaxValue, int.MaxValue);
+				var bmax = new Vector3Int(int.MinValue, int.MinValue, int.MinValue);
 				for (int i = 0; i < nin; i++) {
 					bmin.x = Mathf.Min(bmin.x, _in[i].x);
 					bmin.y = Mathf.Min(bmin.y, _in[i].y);
@@ -699,20 +787,25 @@ namespace Pathfinding.Voxels
 					bmax.z = Mathf.Max(bmax.z, _in[i].z);
 				}
 
-				var x0 = Mathf.FloorToInt(bmin.x / sampleDist);
-				var x1 = Mathf.FloorToInt(bmax.x / sampleDist);
-				var z0 = Mathf.FloorToInt(bmin.z / sampleDist);
-				var z1 = Mathf.FloorToInt(bmax.z / sampleDist);
+				var x0 = bmin.x / sampleDist;
+				var x1 = bmax.x / sampleDist;
+				var z0 = bmin.z / sampleDist;
+				var z1 = bmax.z / sampleDist;
 				samples.Clear();
 				for (int z = z0; z < z1; z++) {
 					for (int x = x0; x < x1; x++) {
-						var pt = new Vector3Int(x * sampleDist, Mathf.FloorToInt((bmax.y + bmin.y) * 0.5f), z * sampleDist);
+						var pt = new Vector3Int(
+							x * sampleDist, 
+							Mathf.FloorToInt((bmax.y + bmin.y) * 0.5f),
+							z * sampleDist
+						);
+ 
 						// Make sure the samples are not too close to the edges.
 						if (distToPoly(nin, _in, pt) > -sampleDist / 2f) continue;
 						samples.Add(x);
 						samples.Add(getHeight(pt.x, pt.y, pt.z, hp));
 						samples.Add(z);
-						samples.Add(0); // Not added
+						samples.Add((int)SAMPLE.NOT_ADDED); // Not added
 					}
 				}
 
@@ -726,22 +819,22 @@ namespace Pathfinding.Voxels
 						break;
 
 					var bestpt = new Vector3Int(0, 0, 0);
-					var bestd = 0f;
-					var besti = -1;
+					var bestd = 0;
+					var besti = UNDEF;
 					for (int i = 0; i < nsamples; i++) {
-						if (samples[i * 4 + 3] != 0) continue; // skip added.
+						if (samples[i * 4 + 3] != (int)SAMPLE.NOT_ADDED) continue; // skip added.
 						var s = new Vector3Int(
 							samples[i * 4 + 0], samples[i * 4 + 1], samples[i * 4 + 2]
 						);
 						var pt = new Vector3Int(
-							s.x * sampleDist + Mathf.FloorToInt(getJitterX(i) * 0.1f),
+							s.x * sampleDist + Mathf.RoundToInt(getJitterX(i) * 0.1f),
 							s.y,
-							s.z * sampleDist + Mathf.FloorToInt(getJitterZ(i) * 0.1f)
+							s.z * sampleDist + Mathf.RoundToInt(getJitterZ(i) * 0.1f)
 						);
 						// The sample location is jittered to get rid of some bad triangulations
 						// which are cause by symmetrical data from the grid structure.
-						var d = distToTriMesh(pt, verts, nverts, tris);
-						if (d < 0f) continue;
+						var d = Mathf.FloorToInt(Int3.FloatPrecision * distToTriMesh(pt, vertsi, nverts, tris));
+						if (d < 0) continue;
 						if (d > bestd) {
 							bestd = d;
 							besti = i;
@@ -749,19 +842,22 @@ namespace Pathfinding.Voxels
 						}
 					}
 					// If the max error is within accepted threshold, stop tesselating.
-					if (bestd < sampleMaxError || besti == -1)
+					if (bestd < sampleMaxError * Int3.Precision || besti == UNDEF)
 						break;
 					// Mark sample as added.
-					samples[besti * 4 + 3] = 1;
+					samples[besti * 4 + 3] = (int)SAMPLE.ADDED;
 					// Add the new sample point.
 					verts.Add(bestpt);
+					vertsi.Add(bestpt);
+					vertso.Add(bestpt);
+					nverts++;
 
 					// Create new triangulation.
 					// TODO: Incremental add instead of full rebuild.
 					edges.Clear();
-					tris.Clear();
-					delaunayHull(nverts, verts.ToArray(), nhull, hull, ref tris, ref edges);
-					//triangulateHull(nverts, verts.ToArray(), nhull, hull, ref tris);
+					//tris.Clear();
+					delaunayHull(nverts, vertso.ToArray(), nhull, hull, ref tris, ref edges);
+					//verifyHull(nverts, vertso.ToArray(), nhull, hull, tris.ToArray(), _in, edges.ToArray());
 				}
 			}
 
@@ -771,6 +867,8 @@ namespace Pathfinding.Voxels
 			}
 			ArrayPool<int>.Release(ref hull);
 			ArrayPool<Vector3Int>.Release(ref vedge);
+			ArrayPool<Vector3Int>.Release(ref vedgei);
+			ArrayPool<Vector3Int>.Release(ref vedgeo);
 		}
 
 		void getHeightDataSeedsFromVertices(
@@ -786,7 +884,7 @@ namespace Pathfinding.Voxels
 			for (int j = 0; j < poly.Length; j++) {
 				var cx = 0;
 				var cz = 0;
-				var ci = -1;
+				var ci = UNDEF;
 				var dmin = Mathf.Infinity;
 
 				for (int k = 0; k < 9; k++) {
@@ -811,7 +909,7 @@ namespace Pathfinding.Voxels
 						}
 					}
 				}
-				if (ci != -1) {
+				if (ci != UNDEF) {
 					stack.Add(new Vector3Int(cx, cz, ci));
 				}
 			}
@@ -982,9 +1080,10 @@ namespace Pathfinding.Voxels
 
 		public void BuildPolyMeshDetail(
 			int sampleDist, int sampleMaxError,
-			VoxelMesh mesh, out VoxelMesh dmesh)
+			VoxelMesh mesh, out VoxelMesh dmesh,
+			int queryRoundMax = 1/* unity/recast is 1 */, int aboveFloor = 5)
 		{
-
+			
 			var nvp = 3; // all original polygons are triangles
 			var bs = borderSize;
 
@@ -993,9 +1092,10 @@ namespace Pathfinding.Voxels
 			var stack = ListPool<Vector3Int>.Claim(512);
 			var samples = ListPool<int>.Claim(512);
 			var verts = ListPool<Vector3Int>.Claim(256);
+			var vertsi = ListPool<Vector3Int>.Claim(256);
+			var vertso = ListPool<Vector3Int>.Claim(256);
 			var hp = new VoxelHeightPatch();
-			var queryRoundMax = 2; // unity/recast is 2
-			hp.querymax = 1 + 2 * queryRoundMax * (queryRoundMax - 1);
+			hp.querymax = 1 + 2 * queryRoundMax * (queryRoundMax + 1);
 			var nPolyVerts = 0;
 			var maxhw = 0;
 			var maxhd = 0;
@@ -1003,6 +1103,7 @@ namespace Pathfinding.Voxels
 			var meshNpolys = mesh.tris.Length / nvp; // triangle count
 			var bounds = ArrayPool<int>.Claim(meshNpolys * 4);
 			var poly = ArrayPool<Vector3Int>.Claim(nvp);
+			var origVerts = ArrayPool<int>.Claim(3);
 
 			// Find max size for a polygon area.
 			for (int i = 0; i < meshNpolys; i++)
@@ -1044,6 +1145,15 @@ namespace Pathfinding.Voxels
 			var dmeshAreas = new List<int>();
 			var dmeshRegs = new List<int>();
 
+			var vertexIndex = 0;
+			for (int i = 0; i < mesh.verts.Length; i++, vertexIndex++) {
+				dmeshVerts.Add(new Int3(
+					mesh.verts[i].x,
+					mesh.verts[i].y,
+					mesh.verts[i].z
+				));
+			}
+
 			for (int i = 0; i < meshNpolys; i++)
 			{
 				// Store polygon vertices for processing.
@@ -1051,12 +1161,21 @@ namespace Pathfinding.Voxels
 				for (int j = 0; j < nvp; j++)
 				{
 					var polyVertId = mesh.tris[i * nvp + j];
-					poly[j] = new Vector3Int(
-						mesh.verts[polyVertId].x,
-						mesh.verts[polyVertId].y,
-						mesh.verts[polyVertId].z
-					);
+					poly[j].x = mesh.verts[polyVertId].x;
+					poly[j].y = mesh.verts[polyVertId].y;
+					poly[j].z = mesh.verts[polyVertId].z;
 					npoly++;
+
+					origVerts[j] = UNDEF;
+					for (int oi = 0; oi < mesh.verts.Length; oi++)
+					{
+						if (poly[j].x == dmeshVerts[oi].x && poly[j].y == dmeshVerts[oi].y && poly[j].z == dmeshVerts[oi].z)
+						{
+							origVerts[j] = oi;
+							break;
+						}
+					}
+					Debug.Assert(origVerts[j] != UNDEF);
 				}
 
 				// Get the height data from the area of the polygon.
@@ -1069,29 +1188,37 @@ namespace Pathfinding.Voxels
 
 				var nverts = 0;
 				buildPolyDetail(
-					poly, npoly, sampleDist, sampleMaxError, voxelArea, hp,
-					ref verts, ref nverts, ref tris, ref edges, ref samples);
+					poly, npoly, sampleDist, sampleMaxError, hp,
+					ref verts, ref vertsi, ref vertso, ref nverts, ref tris, ref edges, ref samples);
 
-				var startIndex = dmeshVerts.Count;
-				for (int vi = 0; vi < verts.Count; vi++)
+				var startIndex = vertexIndex;
+				for (int vi = nvp; vi < nverts; vi++, vertexIndex++)
 				{
-					var dvx = verts[vi].x;
-					var dvy = verts[vi].y;
-					var dvz = verts[vi].z;
-					var dv = new Int3(dvx, dvy, dvz);
-					dmeshVerts.Add(dv);
+					dmeshVerts.Add(new Int3(
+						verts[vi].x,
+						verts[vi].y + aboveFloor,
+						verts[vi].z
+					));
 				}
+
 				for (int ti = 0; ti < tris.Count; ti += 4)
 				{
-					dmeshTris.Add(startIndex + tris[ti + 0]);
-					dmeshTris.Add(startIndex + tris[ti + 1]);
-					dmeshTris.Add(startIndex + tris[ti + 2]);
+					if (tris[ti + 0] < nvp) dmeshTris.Add(origVerts[tris[ti + 0]]);
+					else dmeshTris.Add(startIndex + tris[ti + 0] - nvp);
+					if (tris[ti + 1] < nvp) dmeshTris.Add(origVerts[tris[ti + 1]]);
+					else dmeshTris.Add(startIndex + tris[ti + 1] - nvp);
+					if (tris[ti + 2] < nvp) dmeshTris.Add(origVerts[tris[ti + 2]]);
+					else dmeshTris.Add(startIndex + tris[ti + 2] - nvp);
+
 					dmeshAreas.Add(mesh.areas[i]);
 					dmeshRegs.Add(mesh.regs[i]);
 				}
 			}
 
-			RemoveDuplicateVertices(ref dmeshVerts, ref dmeshTris);
+			if (dmeshVerts.Count > 0 && dmeshTris.Count > 0) {
+				RemoveDuplicateVertices(ref dmeshVerts, ref dmeshTris);
+				//MergeAdjacentVertices(mesh.verts.Length, ref dmeshVerts, ref dmeshTris);
+			}
 
 			dmesh = new VoxelMesh
 			{
@@ -1111,6 +1238,10 @@ namespace Pathfinding.Voxels
 			ListPool<Vector3Int>.Release(stack);
 			ListPool<int>.Release(samples);
 			ListPool<Vector3Int>.Release(verts);
+
+			ListPool<Vector3Int>.Release(vertsi);
+			ListPool<Vector3Int>.Release(vertso);
+			ArrayPool<int>.Release(ref origVerts);
 		}
 
 		void MemorySwap<T>(ref T a, ref T b)
@@ -1149,19 +1280,185 @@ namespace Pathfinding.Voxels
 			}
 		}
 
-		public void RemoveDuplicateVertices(ref List<Int3> verts, ref List<int> tris)
+		void verifyHull(int nverts, Vector3Int[] verts, int nhull, int[] hull, int[] tris, Vector3Int[] orig, int[] edges = null)
 		{
-			var vertMap = new Dictionary<Int3, int>();
-			for (int i = verts.Count - 1; i > 0; i--)
-			{
-				vertMap[verts[i]] = i;
+			if (tris.Length == 4){
+				// only original triangle
+				return;
 			}
 
-			var removeVertMap = new Dictionary<int, int>();
+			var nvp = 3;
+			var valid = HULL.VALID;
+
+			var print = "poly(" + (tris.Length / 4) + "):\n";
+			for (int i = 0; i < nvp; i++) print += orig[i] + ";";
+			print += "\nverts:\n";
+			for (int i = 0; i < nverts; i++) print += verts[i] + ";";
+			print += "\nhull:\n";
+			for (int i = 0; i < nhull; i++) print += verts[hull[i]] + ";";
+			print += "\ninternal:\n";
+			for (int i = nhull; i < nverts; i++) print += verts[i] + ";";
+			print += "\n\n";
+
+			var hullTris = new List<Vector3Int>();
+			for (int i = 0; i < tris.Length; i += 4) hullTris.Add(new Vector3Int(tris[i + 0], tris[i + 1], tris[i + 2]));
+			for (int i = 0; i < hullTris.Count; i++) {
+				print += verts[hullTris[i].x] + ";" + verts[hullTris[i].y] + ";" + verts[hullTris[i].z] + "\n";
+			}
+
+			if (edges != null) {
+				print += "\nedges:\n";
+				for (int i = 0; i < edges.Length / 4; i++) {
+					print += verts[edges[i * 4 + 0]] + ";" + verts[edges[i * 4 + 1]] + "\n";
+				}
+			}
+
+			print += "\n";
+
+			// verify count
+			if (valid == HULL.VALID) {
+				var nvborder = nhull;
+				var nvinternal = nverts - nvborder;
+				var neborder = nvborder;
+				var nedges = nvborder * 2 + nvinternal * 3 - 3;
+				var ntris = nvborder + 2 * nvinternal - 2;
+				print += "\n" + nvborder + " border vertices, " + nvinternal + " internal vertices\n";
+				print += "expected:" + nedges + " edges, " + ntris + " triangules\n";
+				if (edges != null) {
+					print += (edges.Length / 4) + " edges, ";
+					if (edges.Length < nedges * 4) valid = HULL.MISSING_EDGE;
+					else if (edges.Length > nedges * 4) valid = HULL.DUPLICATE_EDGE;
+				}
+				print += (tris.Length / 4) + " triangles\n";
+				if (tris.Length > ntris * 4) valid = HULL.DUPLICATE_TRIANGLE;
+				else if (tris.Length < ntris * 4) valid = HULL.MISSING_TRIANGLE;
+			}
+
+			// verify area
+			if (valid == HULL.VALID) {
+				var area = varea2d(orig, nvp);
+				print += "\narea:" + area + "\n";
+				var areaSum = 0f;
+				for (int i = 0; i < hullTris.Count; i++)
+				{
+					var tri = new Vector3Int[] { verts[hullTris[i].x], verts[hullTris[i].y], verts[hullTris[i].z] };
+					areaSum += varea2d(tri);
+				}
+				print += "area:" + areaSum + "\n\n";
+				if (area > areaSum) valid = HULL.UNCOVERED;
+			}
+
+			// verify triangle
+			if (valid == HULL.VALID) {
+				var sameVerts = new List<Vector3Int>();
+				var tri1Verts = new List<Vector3Int>();
+				var tri2Verts = new List<Vector3Int>();
+				for (int i = 0; i < hullTris.Count && valid == HULL.VALID; i++)
+				{
+					for (int j = i + 1; j < hullTris.Count && valid == HULL.VALID; j++)
+					{
+						var title =
+							"Verifying:" + verts[hullTris[i].x] + ";" + verts[hullTris[i].y] + ";" + verts[hullTris[i].z] +
+							"<=>" + verts[hullTris[j].x] + ";" + verts[hullTris[j].y] + ";" + verts[hullTris[j].z] + "\n";
+
+						print += title;
+						tri1Verts.Clear();
+						tri2Verts.Clear();
+						sameVerts.Clear();
+						tri1Verts.Add(new Vector3Int(verts[hullTris[i].x].x, verts[hullTris[i].x].y, verts[hullTris[i].x].z));
+						tri1Verts.Add(new Vector3Int(verts[hullTris[i].y].x, verts[hullTris[i].y].y, verts[hullTris[i].y].z));
+						tri1Verts.Add(new Vector3Int(verts[hullTris[i].z].x, verts[hullTris[i].z].y, verts[hullTris[i].z].z));
+						tri2Verts.Add(new Vector3Int(verts[hullTris[j].x].x, verts[hullTris[j].x].y, verts[hullTris[j].x].z));
+						tri2Verts.Add(new Vector3Int(verts[hullTris[j].y].x, verts[hullTris[j].y].y, verts[hullTris[j].y].z));
+						tri2Verts.Add(new Vector3Int(verts[hullTris[j].z].x, verts[hullTris[j].z].y, verts[hullTris[j].z].z));
+
+						for (int k = 0; k < tri1Verts.Count; k++)
+						{
+							for (int l = 0; l < tri2Verts.Count; l++)
+							{
+								if (tri1Verts[k].x == tri2Verts[l].x && tri1Verts[k].y == tri2Verts[l].y && tri1Verts[k].z == tri2Verts[l].z)
+									sameVerts.Add(tri2Verts[l]);
+							}
+						}
+						for (int k = 0; k < sameVerts.Count; k++)
+						{
+							for (int l = tri1Verts.Count - 1; l >= 0; l--)
+							{
+								if (sameVerts[k].x == tri1Verts[l].x && sameVerts[k].y == tri1Verts[l].y && sameVerts[k].z == tri1Verts[l].z)
+									tri1Verts.RemoveAt(l);
+							}
+							for (int l = tri2Verts.Count - 1; l >= 0; l--)
+							{
+								if (sameVerts[k].x == tri2Verts[l].x && sameVerts[k].y == tri2Verts[l].y && sameVerts[k].z == tri2Verts[l].z)
+								{
+									tri2Verts.RemoveAt(l);
+								}
+							}
+						}
+						print += "same:";
+						for (int k = 0; k < sameVerts.Count; k++) print += sameVerts[k] + ";";
+						print += "\ntri1:";
+						for (int k = 0; k < tri1Verts.Count; k++) print += tri1Verts[k] + ";";
+						print += "\ntri2:";
+						for (int k = 0; k < tri2Verts.Count; k++) print += tri2Verts[k] + ";";
+						print += "\n";
+
+						if (sameVerts.Count == 3)
+						{
+							valid = HULL.OVERLAPPED;
+						}
+						else if (sameVerts.Count == 2)
+						{
+							if (vcross2(tri1Verts[0], sameVerts[0], sameVerts[1]) * vcross2(tri2Verts[0], sameVerts[0], sameVerts[1]) > 0)
+								valid = HULL.OVERLAPPED;
+						}
+						else if (sameVerts.Count == 1)
+						{
+							valid = HULL.VALID;
+						}
+						else
+						{
+							valid = HULL.VALID;
+						}
+					}
+				}
+			}
+
+			print = valid + ":\n" + print;
+			if (valid == HULL.VALID) {
+				//Debug.LogWarning(print);
+			}
+			else Debug.LogError(print);
+		}
+
+		int varea2d(Vector3Int[] verts, int n = int.MaxValue) {
+			n = Mathf.Min(n, verts.Length);
+			var a = 0;
+			for (int i = 0, j = n - 1; i < n; j = i++) {
+				a += verts[i].x * verts[j].z - verts[i].z * verts[j].x;
+			}
+			return Mathf.Abs(a);
+		}
+
+		public void RemoveDuplicateVertices(ref List<Int3> verts, ref List<int> tris)
+		{
+			var vertMap = ObjectPoolSimple<Dictionary<string, int>>.Claim();
+			vertMap.Clear();
+
+			for (int i = verts.Count - 1; i >= 0; i--)
+			{
+				var vertSig = string.Format("{0},{1},{2}", verts[i].x, verts[i].y, verts[i].z);
+				vertMap[vertSig] = i;
+			}
+
+			var removeVertMap = ObjectPoolSimple<Dictionary<int, int>>.Claim();
+			removeVertMap.Clear();
+
 			for (int i = 0; i < verts.Count; i++)
 			{
-				if (vertMap.ContainsKey(verts[i])) {
-					var j = vertMap[verts[i]];
+				var vertSig = string.Format("{0},{1},{2}", verts[i].x, verts[i].y, verts[i].z);
+				if (vertMap.ContainsKey(vertSig)) {
+					var j = vertMap[vertSig];
 					if (j != i)
 					{
 						removeVertMap[i] = j;
@@ -1169,20 +1466,22 @@ namespace Pathfinding.Voxels
 				}
 			}
 
+			moveVertices(removeVertMap, ref verts, ref tris);
+
+			ObjectPoolSimple<Dictionary<string, int>>.Release(ref vertMap);
+			ObjectPoolSimple<Dictionary<int, int>>.Release(ref removeVertMap);
+		}
+
+		void moveVertices(Dictionary<int, int> vertMap, ref List<Int3> verts, ref List<int> tris) {
 			// removeId is hole, find moveId from tail to fill
-			var moveVertMap = new Dictionary<int, int>();
+			var moveVertMap = ObjectPoolSimple<Dictionary<int, int>>.Claim();
+			moveVertMap.Clear();
 			var removeId = 0;
 			var moveId = verts.Count - 1;
-			for (int i = 0; i < removeVertMap.Keys.Count; i++)
+			for (int i = 0; i < vertMap.Keys.Count; i++)
 			{
-				while (!removeVertMap.ContainsKey(removeId))
-				{
-					removeId++;
-				}
-				while (removeVertMap.ContainsKey(moveId))
-				{
-					moveId--;
-				}
+				while (!vertMap.ContainsKey(removeId) && removeId < moveId) removeId++;
+				while (vertMap.ContainsKey(moveId) && removeId < moveId) moveId--;
 				if (moveId <= removeId) break;
 
 				moveVertMap[moveId] = removeId;
@@ -1191,19 +1490,41 @@ namespace Pathfinding.Voxels
 				moveId--;
 			}
 
-			verts.RemoveRange(verts.Count - removeVertMap.Count, removeVertMap.Count);
+			verts.RemoveRange(verts.Count - vertMap.Count, vertMap.Count);
 
 			for (int i = 0; i < tris.Count; i++)
 			{
-				if (removeVertMap.ContainsKey(tris[i]))
+				if (vertMap.ContainsKey(tris[i]))
 				{
-					tris[i] = removeVertMap[tris[i]];
+					tris[i] = vertMap[tris[i]];
 				}
 				if (moveVertMap.ContainsKey(tris[i]))
 				{
 					tris[i] = moveVertMap[tris[i]];
 				}
 			}
+
+			ObjectPoolSimple<Dictionary<int, int>>.Release(ref moveVertMap);
+		}
+
+		void MergeAdjacentVertices(int norig, ref List<Int3> verts, ref List<int> tris)
+		{
+			var deviation = vdist3Sqr(new Int3(0, 0, 0), new Int3(2, 2, 2));
+			var mergeVertMap = ObjectPoolSimple<Dictionary<int, int>>.Claim();
+			mergeVertMap.Clear();
+
+			for (int i = verts.Count - 1; i >= norig; i--) {
+				for (int j = norig; j < i; j++) {
+					if (vdist3Sqr(verts[i], verts[j]) < deviation) {
+						mergeVertMap.Add(i, j);
+						break;
+					}
+				}
+			}
+
+			moveVertices(mergeVertMap, ref verts, ref tris);
+
+			ObjectPoolSimple<Dictionary<int, int>>.Release(ref mergeVertMap);
 		}
 
 		void PrintMesh(VoxelMesh vm, string title)
@@ -1226,3 +1547,4 @@ namespace Pathfinding.Voxels
 		}
 	}
 }
+
